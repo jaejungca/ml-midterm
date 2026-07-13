@@ -1,0 +1,794 @@
+---
+title: "IBM 6540 — Midterm Exam"
+subtitle: "Applied Machine Learning for Marketing"
+author: "Your Name Here"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-expand: 1
+    toc-location: right-body
+    toc-title: "Questions"
+    number-sections: true
+    code-fold: show
+    code-tools: true
+    theme: cosmo
+    highlight-style: github
+    df-print: kable
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+  echo: true
+---
+
+# Submission Instructions {.unnumbered}
+
+::: {.callout-important title="Read Before You Begin"}
+1. **Replace "Your Name Here"** in the YAML `author` field with your full name before submitting.
+2. **Render this file to HTML** — go to File → Render (or click the Render button in Positron/RStudio). Your submitted file must be the rendered `.html` file, not the `.qmd` source.
+3. **All code chunks must run without errors.** Set `eval: true` for every chunk that contains your answer code. Chunks left as `eval: false` will receive zero credit for the coding portion.
+4. **Written answers go in the designated prose sections** immediately below each question. Do not put written answers inside code chunks.
+5. **This is an open-book, individual exam.** You may use your codebooks, notes, and textbook. You may not collaborate with other students.
+6. **Submit by the deadline** as a single `.html` file via Canvas.
+:::
+
+---
+
+# Setup {.unnumbered}
+
+Run this chunk first. It loads all packages and recreates the datasets used throughout the exam. **Do not modify this chunk.**
+
+```{r setup}
+library(tidymodels)
+library(tidyverse)
+library(broom)
+tidymodels_prefer()
+
+# ── Customer churn dataset (from Module 1) ────────────────────────────────
+# NOTE: This dataset was recalibrated so that (a) monthly_spend is now a
+# function of income, tenure, and num_products (plus noise) rather than
+# pure noise, so Q2's regression finds real, significant relationships,
+# and (b) the churn threshold was tuned so the actual churn rate is
+# genuinely close to 20%, matching Q3's narrative.
+set.seed(42)
+n_cust <- 1000
+
+customer_data <- tibble(
+  customer_id = 1:n_cust,
+  tenure = sample(1:60, n_cust, replace = TRUE),
+  income = round(rlnorm(n_cust, meanlog = 10.9, sdlog = 0.55)),
+  num_products = sample(
+    1:5,
+    n_cust,
+    replace = TRUE,
+    prob = c(0.3, 0.3, 0.2, 0.1, 0.1)
+  ),
+  num_complaints = rpois(n_cust, lambda = 0.5),
+  last_login_days = sample(1:90, n_cust, replace = TRUE),
+  region = sample(
+    c("West", "East", "South", "Midwest"),
+    n_cust,
+    replace = TRUE
+  )
+) |>
+  mutate(
+    monthly_spend = round(
+      pmax(
+        5,
+        20 +
+          0.0006 * income +
+          0.30 * tenure +
+          4 * num_products +
+          rnorm(n_cust, 0, 30)
+      ),
+      2
+    ),
+    churn = factor(ifelse(
+      0.05 *
+        num_complaints +
+        0.02 * last_login_days -
+        0.015 * tenure -
+        0.005 * monthly_spend +
+        rnorm(n_cust, 0, 0.5) >
+        0.84,
+      "yes",
+      "no"
+    ))
+  )
+
+# ── Direct-mail dataset (from Modules 2 & 3) ─────────────────────────────
+# NOTE: This dataset was recalibrated so that (a) the response rate is
+# closer to a realistic ~20% campaign response rate, and (b) age, income,
+# recency, frequency, and loyalty tier all have a meaningful relationship
+# with response, so classification models built on it achieve reasonable
+# (not near-chance) discrimination.
+set.seed(123)
+n_mail <- 3000
+
+mail_data <- tibble(
+  customer_id = paste0("C", str_pad(1:n_mail, 5, pad = "0")),
+  age = round(rnorm(n_mail, mean = 45, sd = 12)),
+  income = round(rlnorm(n_mail, meanlog = 10.8, sdlog = 0.6)),
+  recency_days = round(rexp(n_mail, rate = 1 / 60)),
+  freq_12mo = rpois(n_mail, lambda = 3),
+  avg_order_amt = round(rlnorm(n_mail, meanlog = 4.2, sdlog = 0.5), 2),
+  channel = sample(
+    c("email", "direct_mail", "digital"),
+    n_mail,
+    replace = TRUE,
+    prob = c(0.5, 0.3, 0.2)
+  ),
+  region = sample(
+    c("West", "South", "Midwest", "Northeast"),
+    n_mail,
+    replace = TRUE
+  ),
+  loyalty_tier = sample(
+    c("Bronze", "Silver", "Gold", "Platinum"),
+    n_mail,
+    replace = TRUE,
+    prob = c(0.4, 0.3, 0.2, 0.1)
+  ),
+  responded = rbinom(
+    n_mail,
+    1,
+    prob = plogis(
+      -2.6 +
+        0.03 * (age - 45) +
+        0.50 * log(income / 50000) +
+        0.45 * freq_12mo -
+        0.02 * recency_days +
+        case_when(
+          loyalty_tier == "Bronze" ~ 0,
+          loyalty_tier == "Silver" ~ 0.5,
+          loyalty_tier == "Gold" ~ 1.1,
+          loyalty_tier == "Platinum" ~ 2.0
+        )
+    )
+  )
+) |>
+  mutate(
+    income = if_else(runif(n_mail) < 0.08, NA_real_, income),
+    avg_order_amt = if_else(runif(n_mail) < 0.05, NA_real_, avg_order_amt),
+    responded = factor(responded, levels = c(1, 0), labels = c("yes", "no"))
+  )
+
+# ── Real marketing campaign dataset (from Kaggle) ─────────────────────────
+# Daily performance data for 11 marketing campaigns over 28 days (Feb 2021).
+# Source: "Nykaa Marketing Campaign Performance Dataset"
+# https://www.kaggle.com/datasets/nalisha/nykaa-marketing-campaign-performance-dataset
+# This is the exam's one *real* (non-simulated) dataset, used in Q11 to give
+# students a genuine continuous outcome (revenue) rather than a synthetic one.
+marketing <- read.csv("data/Marketing.csv")
+```
+
+---
+
+# Topic 1 — Machine Learning Foundations & tidymodels
+
+*Covers: TMWR Chapters 1, 3, and 5 (Modules 1 & 2)*
+
+## Q1 — Three Types of Models (3 points)
+
+A marketing team is discussing three projects:
+
+- **Project A**: They want to draw a trend line through monthly sales data to visualize growth over time.
+- **Project B**: They want to test whether a new email subject line caused a statistically significant increase in open rates compared to the control group.
+- **Project C**: They want to build a system that scores each prospect and predicts which ones will respond to the next mailing.
+
+1. Classify each project (A, B, C) into one of the three model types from TMWR Chapter 1: *descriptive*, *inferential*, or *predictive*. Briefly justify each.
+2. This course focuses on one of these types. Which one, and why is it the most relevant for marketing machine learning?
+
+*Write your answer here (2–3 sentences per part).*
+
+---
+
+## Q2 — The Formula Interface and broom (5 points)
+
+Using the `customer_data` dataset, fit a linear regression predicting `monthly_spend` from `tenure`, `num_products`, and `region`. Then answer the questions below.
+
+::: {.callout-note title="A predictor is missing on purpose"}
+`customer_data` also contains an `income` variable, which is in fact the single strongest driver of `monthly_spend` in how this data was generated. It is **intentionally excluded** from the model formula below. Keep this in mind when you interpret the R² in part 2 — a
+modest R² here doesn't necessarily mean spend is unpredictable, only that this particular model is missing an important predictor.
+:::
+
+```{r q2-fit, eval=FALSE}
+# Fit the model
+spend_fit <- lm(
+  monthly_spend ~ tenure + num_products + region,
+  data = customer_data
+)
+
+# Use tidy() to extract coefficients
+tidy(spend_fit)
+
+# Use glance() to assess model fit
+glance(spend_fit)
+
+# Use augment() to get residuals and plot them
+augment(spend_fit) |>
+  ggplot(aes(x = .fitted, y = .resid)) +
+  geom_point(alpha = 0.4, color = "#154734") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#B08D57") +
+  labs(
+    title = "Residuals vs. Fitted Values",
+    x = "Fitted values ($)",
+    y = "Residuals ($)"
+  ) +
+  theme_minimal()
+```
+
+1. Which predictors are statistically significant at the 0.05 level? How do you know?
+2. What does the R² value tell you about the model's explanatory power? Is this model a good fit for the data?
+3. What pattern (if any) do you see in the residual plot, and what might it suggest about the model?
+
+*Write your answer here.*
+
+---
+
+## Q3 — The Data Budget and Stratified Splitting (4 points)
+
+```{r q3-split, eval=FALSE}
+set.seed(2024)
+
+# Part A: Create a stratified 75/25 split on churn
+churn_split <- initial_split(customer_data, prop = 0.75, strata = churn)
+churn_train <- training(churn_split)
+churn_test <- testing(churn_split)
+
+# Verify churn rates in both sets
+bind_rows(
+  churn_train |>
+    count(churn) |>
+    mutate(pct = round(n / sum(n) * 100, 1), set = "Training"),
+  churn_test |>
+    count(churn) |>
+    mutate(pct = round(n / sum(n) * 100, 1), set = "Test")
+) |>
+  select(set, churn, n, pct)
+
+# Part B: What happens without stratification?
+set.seed(2024)
+unstrat_split <- initial_split(customer_data, prop = 0.75)
+unstrat_train <- training(unstrat_split)
+unstrat_test <- testing(unstrat_split)
+
+bind_rows(
+  unstrat_train |>
+    count(churn) |>
+    mutate(pct = round(n / sum(n) * 100, 1), set = "Train (no strata)"),
+  unstrat_test |>
+    count(churn) |>
+    mutate(pct = round(n / sum(n) * 100, 1), set = "Test (no strata)")
+) |>
+  select(set, churn, n, pct)
+```
+
+1. What is the "data budget" concept from TMWR Chapter 5, and why does it matter for machine learning?
+2. Compare the churn rates in training vs. test sets with and without stratification. What do you notice?
+3. The churn rate in `customer_data` is approximately 20%. Explain in 2–3 sentences why stratified splitting is especially important when a class is rare — and what could go wrong without it.
+
+*Write your answer here.*
+
+---
+
+# Topic 2 — Foundations of Logistic Regression
+
+*Covers: Video Quiz (Steps 1-1 through 2-1)*
+
+## Q4 — Logarithms and Marketing Data (5 points)
+
+The `mail_data` dataset contains an `income` variable with `meanlog = 10.8` and `sdlog = 0.6`.
+
+```{r q4-logs, eval=FALSE}
+# Part A: Compute the theoretical median and mean of income
+median_income <- exp(10.8)
+mean_income <- exp(10.8 + 0.6^2 / 2)
+cat("Theoretical median: $", round(median_income), "\n")
+cat("Theoretical mean  : $", round(mean_income), "\n")
+
+# Part B: Verify against the actual data
+mail_data |>
+  summarise(
+    empirical_median = median(income, na.rm = TRUE),
+    empirical_mean = mean(income, na.rm = TRUE)
+  )
+
+# Part C: Demonstrate why log10 base doesn't matter after normalization
+income_val <- 49021
+tibble(
+  base = c("natural", "base10"),
+  log_value = c(log(income_val), log10(income_val)),
+  ratio = log(income_val) / log10(income_val)
+)
+```
+
+1. Why is the mean income higher than the median income? What property of the income distribution causes this, and why is it common in real-world marketing data?
+2. Your recipe uses `step_log(income, base = 10, offset = 1)` followed by `step_normalize()`. Explain why the choice of log base (10 vs. natural log) does not affect the final model, using the ratio you computed above.
+3. Why does the recipe include `offset = 1` in `step_log()`? What would happen without it?
+
+*Write your answer here.*
+
+---
+
+## Q5 — Odds, Log(Odds), and the Logit (5 points)
+
+```{r q5-odds, eval=FALSE}
+# Response rate in mail_data
+p_respond <- mean(mail_data$responded == "yes")
+cat("Response probability:", round(p_respond, 4), "\n")
+
+# Convert to odds and log(odds)
+odds_respond <- p_respond / (1 - p_respond)
+logodds_respond <- log(odds_respond)
+cat("Odds           :", round(odds_respond, 4), "\n")
+cat("Log(odds)      :", round(logodds_respond, 4), "\n")
+
+# Symmetry of log(odds)
+probs <- c(0.05, 0.50, 0.95)
+odds_vec <- probs / (1 - probs)
+tibble(
+  probability = probs,
+  odds = round(odds_vec, 4),
+  log_odds = round(log(odds_vec), 4)
+)
+```
+
+1. The response rate in `mail_data` is approximately 20%. Compute the **odds** of responding and express it in plain marketing language (e.g., "for every X customers who respond, Y do not").
+2. The table above shows probabilities of 0.05, 0.50, and 0.95 with their corresponding log(odds). Explain why log(odds) is symmetric around zero while raw odds are not. Why does this symmetry matter for building a linear model?
+3. A logistic regression model outputs `.pred_yes = 0.20` for a specific customer. Convert this to log(odds) by hand (show the formula and calculation), and explain what it means that this log(odds) value is negative.
+
+*Write your answer here.*
+
+---
+
+## Q6 — Odds Ratios and Coefficient Interpretation (5 points)
+
+After fitting a logistic regression to `mail_data`, you extract the following coefficients:
+
+| term | estimate (log-odds) |
+|---|---|
+| freq_12mo | 0.28 |
+| recency_days | −0.19 |
+| income | 0.31 |
+| loyalty_tier_Platinum | 0.45 |
+| loyalty_tier_Gold | 0.12 |
+| loyalty_tier_Silver | 0.03 |
+
+```{r q6-or, eval=FALSE}
+# Convert log-odds coefficients to odds ratios
+coef_tbl <- tibble(
+  term = c(
+    "freq_12mo",
+    "recency_days",
+    "income",
+    "loyalty_tier_Platinum",
+    "loyalty_tier_Gold",
+    "loyalty_tier_Silver"
+  ),
+  estimate = c(0.28, -0.19, 0.31, 0.45, 0.12, 0.03)
+) |>
+  mutate(odds_ratio = exp(estimate))
+
+coef_tbl
+```
+
+1. Interpret the odds ratio for `freq_12mo` in a complete sentence that a marketing manager could understand (do not use statistical jargon).
+2. Interpret the odds ratio for `recency_days`. Why does a negative coefficient make intuitive sense for a direct-mail response model?
+3. Compare the odds ratios for the three loyalty tiers. Bronze is the reference category (coefficient = 0). Which tier is the strongest predictor of response? Express the result as "Platinum customers have ___ times the odds of responding compared to Bronze customers."
+
+*Write your answer here.*
+
+---
+
+## Q7 — Logistic vs. Linear Regression (5 points)
+
+```{r q7-sigmoid, eval=FALSE}
+# Sigmoid function at various linear predictor values
+tibble(
+  linear_predictor = c(-4, -2, -1, 0, 1, 2, 4)
+) |>
+  mutate(
+    probability = plogis(linear_predictor)
+  )
+```
+
+1. Why can't we use linear regression to model a binary outcome like `responded` (yes/no)? Give one specific example of what goes wrong, using numbers from the `mail_data` response rate (≈ 20%).
+2. The sigmoid function is defined as $P = \frac{1}{1+e^{-z}}$ where $z$ is the linear predictor. When $z = 0$, what probability does `plogis(0)` return, and why is that mathematically necessary?
+3. Logistic regression uses **maximum likelihood** rather than **least squares** to fit the model. In plain English, what is maximum likelihood estimating — what is it trying to maximize and why?
+
+*Write your answer here.*
+
+---
+
+# Topic 3 — Data Splitting & Preprocessing
+
+*Covers: TMWR Chapters 5 and 8 (Module 2 Codebook)*
+
+## Q8 — Recipe Design and Step Order (6 points)
+
+Below is a recipe for the direct-mail dataset. Answer the questions based on this recipe.
+
+```{r q8-recipe, eval=FALSE}
+set.seed(617)
+mail_split <- initial_split(mail_data, prop = 0.80, strata = responded)
+mail_train <- training(mail_split)
+mail_test <- testing(mail_split)
+
+mail_rec <- recipe(
+  responded ~ customer_id +
+    age +
+    income +
+    recency_days +
+    freq_12mo +
+    avg_order_amt +
+    channel +
+    region +
+    loyalty_tier,
+  data = mail_train
+) |>
+  update_role(customer_id, new_role = "ID") |>
+  step_impute_median(all_numeric_predictors()) |> # Step 1
+  step_log(
+    income,
+    avg_order_amt,
+    recency_days, # Step 2
+    base = 10,
+    offset = 1
+  ) |>
+  step_normalize(all_numeric_predictors()) |> # Step 3
+  step_dummy(all_nominal_predictors()) |> # Step 4
+  step_zv(all_predictors()) # Step 5
+
+mail_prep <- prep(mail_rec)
+tidy(mail_prep)
+tidy(mail_prep, number = 1) # imputation values
+tidy(mail_prep, number = 3) # normalization statistics
+```
+
+1. Why must `step_impute_median()` come **before** `step_log()`? What would happen to the output if the order were reversed?
+2. The output of `tidy(mail_prep, number = 3)` shows a mean close to 4.69 for `income`. Explain why the mean is 4.69 and not 10.8 (the `meanlog` used to generate income). Show the calculation.
+3. What is the purpose of including `customer_id` in the formula and then calling `update_role(customer_id, new_role = "ID")`? What would happen if `update_role()` were removed but `customer_id` stayed in the formula?
+
+*Write your answer here.*
+
+---
+
+## Q9 — prep(), bake(), and Data Leakage (6 points)
+
+```{r q9-leakage, eval=FALSE}
+# Correct approach: prep on training, bake on test
+prep_correct <- prep(mail_rec)
+test_correct <- bake(prep_correct, new_data = mail_test)
+
+# Incorrect approach: prep on test set (data leakage)
+prep_leaked <- prep(mail_rec, training = mail_test)
+test_leaked <- bake(prep_leaked, new_data = mail_test)
+
+# Compare the normalization mean for income between the two approaches
+bind_rows(
+  tidy(prep_correct, number = 3) |>
+    filter(terms == "income", statistic == "mean") |>
+    mutate(approach = "correct (prep on train)"),
+  tidy(prep_leaked, number = 3) |>
+    filter(terms == "income", statistic == "mean") |>
+    mutate(approach = "leaked (prep on test)")
+) |>
+  select(approach, terms, statistic, value)
+```
+
+1. Explain what **data leakage** means in the context of `prep()` and `bake()`. Why is prepping on the test set a form of leakage?
+2. The two approaches produce slightly different normalization statistics for `income`. Why are they different, and why does even a small difference matter for model evaluation?
+3. In practice, the performance gap caused by this leakage is often small. Does that mean it is acceptable? Explain your reasoning.
+
+*Write your answer here.*
+
+---
+
+## Q10 — Workflow and Regularization (6 points)
+
+```{r q10-workflow, eval=FALSE}
+# Fit a Lasso logistic regression workflow
+lr_spec <- logistic_reg(penalty = 0.01, mixture = 1) |>
+  set_engine("glmnet") |>
+  set_mode("classification")
+
+mail_wf <- workflow() |> add_recipe(mail_rec) |> add_model(lr_spec)
+mail_fit <- fit(mail_wf, data = mail_train)
+
+# Extract coefficients
+mail_fit |>
+  extract_fit_parsnip() |>
+  tidy() |>
+  filter(term != "(Intercept)") |>
+  arrange(desc(abs(estimate)))
+```
+
+1. What does `mixture = 1` specify in the model? What regularization method does this correspond to, and what is its distinguishing property compared to Ridge regression?
+2. Several predictors have `estimate = 0` in the output (for example, `region` and `avg_order_amt`). What did the Lasso do to these predictors, and why is this useful in a marketing context with many potential predictors?
+3. Why is a `workflow()` preferred over calling `prep()`, `bake()`, and `fit()` separately? Give one concrete reason related to preventing mistakes in a real modeling project.
+
+*Write your answer here.*
+
+---
+
+# Topic 4 — Model Evaluation & Resampling
+
+*Covers: TMWR Chapters 9 and 10 (Module 3 Codebook)*
+
+## Q11 — Regression Metrics (9 points)
+
+Unlike the other datasets in this exam, `marketing` is **real, not simulated** — daily
+performance data for 11 marketing campaigns over 28 days, from the
+["Digital Marketing Metrics & KPIs to Measure (SQL)"](https://www.kaggle.com/datasets/0d4c0018901ff857a480079fdcf4f9e7c5ddce3367ecd3c05dd757c3a1c2c12d)
+on Kaggle. Using this dataset, fit a linear regression predicting daily `revenue` from
+`mark_spent`, `clicks`, and `leads`. Then answer the questions below.
+
+::: {.callout-note title="A quirk of real data"}
+Because `lm()` has no constraint keeping predictions non-negative, some campaign-days in the test set will get a **negative predicted revenue** — obviously impossible, since revenue can't be negative. This is the same fundamental issue as Q7's discussion of linear regression for
+binary outcomes: an unconstrained linear model can output values outside the range the outcome can actually take.
+:::
+
+```{r q11-reg, eval=FALSE}
+# Fit a regression model predicting daily campaign revenue
+set.seed(999)
+marketing_split <- initial_split(marketing, prop = 0.80)
+marketing_train <- training(marketing_split)
+marketing_test <- testing(marketing_split)
+
+reg_rec <- recipe(
+  revenue ~ mark_spent + clicks + leads,
+  data = marketing_train
+) |>
+  step_normalize(all_numeric_predictors())
+
+reg_wf <- workflow() |>
+  add_recipe(reg_rec) |>
+  add_model(linear_reg() |> set_engine("lm"))
+
+reg_fit <- fit(reg_wf, data = marketing_train)
+reg_preds <- augment(reg_fit, new_data = marketing_test)
+
+# Compute metrics
+reg_preds |>
+  metric_set(rmse, rsq, mae)(truth = revenue, estimate = .pred)
+
+# Add a "whale" campaign-day and see how metrics change
+whale <- tibble(revenue = 2800000, .pred = 200000)
+reg_preds_whale <- bind_rows(
+  reg_preds |> select(revenue, .pred),
+  whale
+)
+reg_preds_whale |>
+  metric_set(rmse, mae)(truth = revenue, estimate = .pred)
+```
+
+1. Explain in plain English what **RMSE** measures. How is it different from **MAE**, and why does RMSE penalize large errors more?
+2. After adding the "whale" campaign-day (actual revenue = \$2,800,000, predicted = \$200,000), which metric — RMSE or MAE — changes more in percentage terms? Why is this the expected result?
+3. If you were reporting model performance to a VP of Marketing who is trying to plan next month's marketing budget, which metric (RMSE, MAE, or R²) would you report, and why? Answer in 2–3 sentences.
+
+*Write your answer here.*
+
+---
+
+## Q12 — Confusion Matrix and Classification Metrics (11 points)
+
+```{r q12-conf, eval=FALSE}
+# Fit classification model and generate predictions
+set.seed(617)
+mail_split2 <- initial_split(mail_data, prop = 0.80, strata = responded)
+mail_train2 <- training(mail_split2)
+mail_test2 <- testing(mail_split2)
+
+lr_wf2 <- workflow() |>
+  add_recipe(
+    recipe(
+      responded ~ customer_id +
+        age +
+        income +
+        recency_days +
+        freq_12mo +
+        avg_order_amt +
+        channel +
+        region +
+        loyalty_tier,
+      data = mail_train2
+    ) |>
+      update_role(customer_id, new_role = "ID") |>
+      step_impute_median(all_numeric_predictors()) |>
+      step_log(income, avg_order_amt, recency_days, base = 10, offset = 1) |>
+      step_normalize(all_numeric_predictors()) |>
+      step_dummy(all_nominal_predictors()) |>
+      step_zv(all_predictors())
+  ) |>
+  add_model(
+    logistic_reg(penalty = 0.01, mixture = 1) |>
+      set_engine("glmnet") |>
+      set_mode("classification")
+  )
+
+lr_fit2 <- fit(lr_wf2, data = mail_train2)
+test_preds2 <- augment(lr_fit2, new_data = mail_test2)
+
+# Confusion matrix
+conf_mat(test_preds2, truth = responded, estimate = .pred_class)
+
+# Metrics
+test_preds2 |>
+  metric_set(accuracy, sens, spec, precision)(
+    truth = responded,
+    estimate = .pred_class
+  )
+
+# Lower threshold
+preds_low_threshold <- test_preds2 |>
+  mutate(
+    .pred_class_03 = factor(
+      if_else(.pred_yes > 0.30, "yes", "no"),
+      levels = c("yes", "no")
+    )
+  )
+
+preds_low_threshold |>
+  metric_set(sens, precision)(
+    truth = responded,
+    estimate = .pred_class_03
+  )
+```
+
+1. From the confusion matrix, identify the **false negatives** and explain what they represent in the context of a direct-mail campaign. What is the business cost of a false negative?
+2. The model achieves roughly 82% accuracy at the default 0.5 threshold. Given that a "dumb" model that always predicts "no" would score close to 80% accuracy (since the response rate is only about 20%), how much real lift is the model providing? Why is accuracy alone a limited way to describe that lift?
+3. When the threshold is lowered from 0.5 to 0.3, sensitivity increases and precision decreases. Explain this tradeoff in marketing terms: what does the campaign manager gain and what do they give up?
+
+*Write your answer here.*
+
+---
+
+## Q13 — ROC Curve and AUC (10 points)
+
+```{r q13-roc, eval=FALSE}
+# ROC curve
+roc_data <- test_preds2 |>
+  roc_curve(truth = responded, .pred_yes)
+
+autoplot(roc_data) +
+  labs(title = "ROC Curve — Direct-Mail Response Model") +
+  theme_minimal()
+
+# AUC value
+auc_val <- test_preds2 |>
+  roc_auc(truth = responded, .pred_yes)
+auc_val
+```
+
+1. What does the ROC curve show that a single confusion matrix does not? Why is this a more complete view of model performance?
+2. Complete this sentence using the AUC value you computed: "If we randomly pick one customer who **would** respond and one who **would not**, this model assigns a higher predicted probability to the true responder \_\_\_% of the time." Explain why AUC = 0.5 would be equivalent to random guessing.
+3. A colleague proposes targeting only the customers in the **top 20%** of predicted probabilities (the highest `.pred_yes` scores). How would you use the ROC curve to estimate what sensitivity you would achieve at that targeting rate? Describe the process (no code required).
+
+*Write your answer here.*
+
+---
+
+## Q14 — Resubstitution and Cross-Validation (10 points)
+
+```{r q14-resub, eval=FALSE}
+# Compare resubstitution vs. held-out accuracy
+train_preds2 <- augment(lr_fit2, new_data = mail_train2)
+
+bind_rows(
+  train_preds2 |>
+    roc_auc(truth = responded, .pred_yes) |>
+    mutate(data = "training (resubstitution)"),
+  test_preds2 |>
+    roc_auc(truth = responded, .pred_yes) |>
+    mutate(data = "test (held out)")
+) |>
+  select(data, .estimate)
+
+# 10-fold cross-validation
+set.seed(2024)
+mail_folds <- vfold_cv(mail_train2, v = 10, strata = responded)
+
+cv_results <- fit_resamples(
+  lr_wf2,
+  resamples = mail_folds,
+  metrics = metric_set(roc_auc, accuracy, sens),
+  control = control_resamples(save_pred = TRUE)
+)
+
+collect_metrics(cv_results)
+```
+
+1. Define **resubstitution** and explain why it tends to produce optimistic performance estimates. Is the gap large or small for this Lasso logistic regression, and why?
+2. Describe how **10-fold cross-validation** works in 3–4 sentences. Why does it produce a more trustworthy performance estimate than a single train/test split?
+3. The cross-validated `roc_auc` comes with a **standard error** (`std_err` column). What does this standard error represent, and why is it useful information that a single test-set AUC cannot provide?
+
+*Write your answer here.*
+
+---
+
+## Q15 — Comparing Resampling Methods and Model Flexibility (10 points)
+
+```{r q15-flex, eval=FALSE}
+# Compare 5-fold vs 10-fold CV
+set.seed(2024)
+folds_5 <- vfold_cv(mail_train2, v = 5, strata = responded)
+
+cv_5fold <- fit_resamples(
+  lr_wf2,
+  resamples = folds_5,
+  metrics = metric_set(roc_auc)
+)
+
+bind_rows(
+  collect_metrics(cv_results) |>
+    filter(.metric == "roc_auc") |>
+    mutate(method = "10-fold CV"),
+  collect_metrics(cv_5fold) |>
+    filter(.metric == "roc_auc") |>
+    mutate(method = "5-fold CV")
+) |>
+  select(method, mean, std_err)
+
+# Resubstitution gap: Lasso vs. Random Forest, measured with AUC
+# (accuracy is a poor choice here since ~80% of customers are "no" in
+#  both train and test, so accuracy alone can hide overfitting)
+rf_spec <- rand_forest() |>
+  set_engine("ranger") |>
+  set_mode("classification")
+
+rf_wf <- lr_wf2 |> update_model(rf_spec)
+rf_fit <- fit(rf_wf, data = mail_train2)
+
+rf_train_preds <- augment(rf_fit, new_data = mail_train2)
+rf_test_preds <- augment(rf_fit, new_data = mail_test2)
+
+bind_rows(
+  rf_train_preds |>
+    roc_auc(truth = responded, .pred_yes) |>
+    mutate(model = "Random Forest", data = "train"),
+  rf_test_preds |>
+    roc_auc(truth = responded, .pred_yes) |>
+    mutate(model = "Random Forest", data = "test"),
+  train_preds2 |>
+    roc_auc(truth = responded, .pred_yes) |>
+    mutate(model = "Lasso LR", data = "train"),
+  test_preds2 |>
+    roc_auc(truth = responded, .pred_yes) |>
+    mutate(model = "Lasso LR", data = "test")
+) |>
+  select(model, data, .estimate) |>
+  pivot_wider(names_from = data, values_from = .estimate) |>
+  mutate(gap = round(train - test, 4))
+```
+
+1. When the number of folds decreases from 10 to 5, what typically happens to the **standard error** of the cross-validated metric? Explain why in terms of the number of estimates being averaged.
+2. The random forest shows a much larger resubstitution AUC gap (train − test) than the Lasso logistic regression. Explain why more flexible models tend to overfit more, and what the Lasso's penalty is doing to prevent this.
+3. Given what you observed about the resubstitution gap, explain why it would be **unfair** to compare a Lasso logistic regression and a random forest using their training-set performance. What should you use instead?
+
+*Write your answer here.*
+
+---
+
+# Bonus Question (+5 points) {.unnumbered}
+
+## BQ — End-to-End Critical Thinking
+
+A marketing analyst at a retail company runs the following code and reports:
+
+```r
+rf_fit <- fit(rf_wf, data = mail_data)   # Note: full dataset, not mail_train
+preds  <- augment(rf_fit, new_data = mail_data)
+roc_auc(preds, truth = responded, .pred_yes)
+# AUC = 0.99
+```
+
+"Our model achieves an AUC of 0.99 — nearly perfect performance! We should deploy this immediately to score all prospects for the next mailing."
+
+Identify **at least three distinct problems** with this analyst's approach and the conclusion they drew. For each problem, explain what went wrong and what the correct approach would be.
+
+*Write your answer here (3–5 sentences per problem).*
+
+---
