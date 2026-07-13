@@ -520,11 +520,8 @@ mail_fit |>
 
 ## Q11 — Regression Metrics (9 points)
 
-Unlike the other datasets in this exam, `marketing` is **real, not simulated** — daily
-performance data for 11 marketing campaigns over 28 days, from the
-["Digital Marketing Metrics & KPIs to Measure (SQL)"](https://www.kaggle.com/datasets/0d4c0018901ff857a480079fdcf4f9e7c5ddce3367ecd3c05dd757c3a1c2c12d)
-on Kaggle. Using this dataset, fit a linear regression predicting daily `revenue` from
-`mark_spent`, `clicks`, and `leads`. Then answer the questions below.
+Unlike the other datasets in this exam, `marketing` is **real, not simulated** — daily performance data for 11 marketing campaigns over 28 days, from the ["Digital Marketing Metrics & KPIs to Measure (SQL)"](https://www.kaggle.com/datasets/0d4c0018901ff857a480079fdcf4f9e7c5ddce3367ecd3c05dd757c3a1c2c12d)
+on Kaggle. Using this dataset, fit a linear regression predicting daily `revenue` from `mark_spent`, `clicks`, and `leads`. Then answer the questions below.
 
 ::: {.callout-note title="A quirk of real data"}
 Because `lm()` has no constraint keeping predictions non-negative, some campaign-days in the test set will get a **negative predicted revenue** — obviously impossible, since revenue can't be negative. This is the same fundamental issue as Q7's discussion of linear regression for
